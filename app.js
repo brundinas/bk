@@ -1,11 +1,11 @@
 const express = require("express");
 const path = require("path");
 const sqlite3 = require('better-sqlite3')
-const db = sqlite3('./users.db', {verbose: console.log})
+const db = sqlite3('./buekorps.db', {verbose: console.log})
 const session = require('express-session')
 const dotenv = require('dotenv');
 dotenv.config()
-  
+
 
 
 const app = express();
@@ -20,37 +20,49 @@ app.use(session({
     saveUninitialized: false
 }))
 
-
 app.post('/login', (req, res) => {
-   console.log(req.body)
-   
-    if (checkUserPassword(req.body.username, req.body.password)) {
-        req.session.loggedIn = true;
+    console.log(req.body)
+    let user = checkUserPassword(req.body.username, req.body.password) 
+    if (user != null) {
+        req.session.loggedIn = true
         req.session.username = req.body.username
-        res.redirect('/');
+        req.session.userrole = user.role
+        req.session.name = user.firstName + ' ' + user.lastName
+        req.session.userid = user.ID
+        //res.redirect('/');
+        // Pseudocode - Adjust according to your actual frontend framework or vanilla JS
+        if (req.session.userrole === 'Soldier') {
+            res.sendFile(path.join(__dirname, "public/peletonMembers.html"));
+        } else if (req.session.userrole === 'Leader') {
+            displayLeaderForm();
+        } else if (req.session.userrole === 'Administrator') {
+            displayAdministratorForm();
+        }
+
     } else {
         req.session.loggedIn = false;
         res.sendFile(path.join(__dirname, "public/loginForm.html"));
     }
-    
+
 })
 
 
 function checkUserPassword(username, password){
 
-    //Denne funksjonen må endres slik at man hasher passordet, og sjekker at det hashete 
-    //passordet er likt det hashet passordet som ligger i databasen
-    const sql = db.prepare('SELECT username FROM user WHERE password = ? AND username = ?');
-    let rows = sql.all(password, username); // Swap the order if your table structure is username first, then password
-    return rows.length > 0;
-}
+        //Denne funksjonen må endres slik at man hasher passordet, og sjekker at det hashete 
+        //passordet er likt det hashet passordet som ligger i databasen
+        const sql = db.prepare('SELECT user.id, user.firstname, user.lastname, roles.name as role FROM user INNER JOIN roles where user.role_id = roles.id AND password = ? AND username = ?');
+        let rows = sql.all(password, username); // Swap the order if your table structure is username first, then password
+        
+        return rows.length > 0 ? rows[0]:null
+ }
 
 
 //Denne henger sammen med i loginformen -- Jeg var lat og har både login og register i loginform.html
 //  <form action='/register' method="POST">
 app.post('/register', (req, res) => {
     console.log(req.body)
-    addUser(req.body.username, req.body.firstname, req.body.lastname, req.body.mobile, req.body.password)
+    addUser(req.body.username, req.body.firstname, req.body.lastname, req.body.mobile, req.body.email, req.body.password)
     res.sendFile(path.join(__dirname, "public/loginForm.html"));
      
  });
@@ -64,7 +76,7 @@ app.post('/register', (req, res) => {
 app.post('/create-user', (req, res) => {
     console.log("createUser", req.body);
     const user = req.body;
-    addUser(user.username, user.firstname, user.lastname, user.mobile, user.password);
+    addUser(user.username, user.firstname, user.lastname, user.mobile, user.email, user.password);
     // Redirect to user list or confirmation page after adding user
     res.redirect('/loginForm.html');
 });
@@ -74,10 +86,12 @@ app.post('/create-user', (req, res) => {
 //Her sjekkes om bruker er logget inn, hvis ikke blir du rutet til loginformen
 //login og register ligger foran deklarasjonen av middleware, så denne slår
 //derfor ikke inn der
+/*
 app.use((req, res, next)=>{
     console.log(req.session)
     if (req.session.loggedIn != undefined && req.session.loggedIn){
         console.log("Bruker innlogget")
+        
         next()
     }
     else {
@@ -86,16 +100,35 @@ app.use((req, res, next)=>{
 
     }
 })
+*/
+function checkLoggedIn(req, res, next) {
+    if (!req.session.loggedIn) {
+        res.redirect('/loginForm.html');
+    } else {
+        next();
+    }
+}
 
-//denne må defineres etter middleware. 
-//Jeg prøvde å flytte den opp, for å rydde i koden og da fungerte det ikke
-app.use(express.static(staticPath));
+function checkRole(role) {
+    return (req, res, next) => {
+        if (req.session.userrole === role) {
+            next();
+        } else {
+            res.status(403).send('Access Denied');
+        }
+    };
+}
+
+
 
 
 
 async function getUsers(request, response) {
 
-    const sql=db.prepare('SELECT username, firstname, lastname, mobile, role, password FROM user')
+    const sql=db.prepare('SELECT username, firstname, lastname, mobile, roles.name as role, peleton.name as peleton, kompani.name as kompani FROM user '+
+    ' inner join roles on roles.id = user.role_id' +
+    ' inner join peleton on peleton.id = user.peleton_id' +
+    ' inner join kompani on kompani.id = peleton.kompani_id')
     let rows = sql.all()   
     console.log("rows.length",rows.length)
 
@@ -103,12 +136,43 @@ async function getUsers(request, response) {
 
 }
 
-function addUser(username, firstName, lastName, mobile,  password) {
+
+// Example usage of middleware 
+//i stdet for å bruke app.use() som først vist, kaller vi middlewaren direkte
+//Og det fine er at vi først kan sjekke at bruker er logget inn, og deretter
+//sjekke riktig rolle 
+app.post('/add-member', checkLoggedIn, checkRole('Leader'), (req, res) => {
+    // Code to add a member to a peleton
+});
+
+app.get('/leader.html', checkLoggedIn, checkRole('Leader'), (req, res) => {
+    
+})
+
+
+app.get('/api/peletonMember', checkLoggedIn,  (req, res) => {
+    // Code to return name of peleton and 
+    //members of the peleton which user is member of
+    
+    const sql=db.prepare('SELECT peleton.name as peleton, user.id, user.firstname, user.lastname, user.mobile, roles.name as role, peleton.name as peleton, kompani.name as kompani FROM user ' + 
+    ' inner join peleton on peleton.id = user.peleton_id ' +
+    ' inner join roles on user.role_id = roles.id ' +
+    ' inner join kompani on peleton.kompani_id = kompani.id' +
+    ' where peleton_id in (select peleton_id from user where id = ?)')
+    let rows = sql.all(req.session.userid)   
+    console.log("rows.length",rows.length)
+
+    res.send(rows);
+});
+
+
+
+function addUser(username, firstName, lastName, mobile, email, password) {
     //Denne funksjonen må endres slik at man hasher passordet før man lagrer til databasen
     //rolle skal heller ikke være hardkodet.
 
-    const sql = db.prepare("INSERT INTO user (username, firstName, lastName, mobile, role, password) values (?, ?, ?, ?, ?, ?)")
-    const info = sql.run(username, firstName, lastName, mobile, 1, password)
+    const sql = db.prepare("INSERT INTO user (username, firstName, lastName, mobile, role_id, email, password) values (?, ?, ?, ?, ?, ?, ?)")
+    const info = sql.run(username, firstName, lastName, mobile, 1, email, password)
     return info
 }
 
@@ -120,25 +184,12 @@ function updateUserDB(username, firstName, lastName, mobile) {
 }
 
 
-app.get('/', (req, res) => {
-    
-    if (req.session.loggedIn != undefined && req.session.loggedIn) {
-        res.sendFile(path.join(__dirname, 'public/index.html'));
-    } else {
-        res.redirect('/loginForm.html');
-    }
-});
 
 
-
-
-//denne henger sammen JavaScripten i index.html
-//let response = await fetch('/users');
-app.get("/users", getUsers);
 
 //Denne henger sammen med i html: Se sammenheng Method = POST og app.post
 // <form id="userForm" action='/user' method="POST">
-app.post("/user", (req, res) => {
+app.post("/user", checkLoggedIn, (req, res) => {
     console.log(req.body)
     const user = req.body
     updateUserDB(user.username, user.firstname, user.lastname, user.cell)
@@ -146,9 +197,10 @@ app.post("/user", (req, res) => {
 })
 
  
-app.get("/users.html", (req, res) => {
-    res.sendFile(path.join(__dirname, "public/users.html"));
-});
+
+//denne må defineres etter middleware. 
+//Jeg prøvde å flytte den opp, for å rydde i koden og da fungerte det ikke
+app.use(express.static(staticPath));
 
 app.listen(3000, () => {
     console.log("Server is running on http://localhost:3000");
